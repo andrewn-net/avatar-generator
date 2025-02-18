@@ -9,27 +9,43 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
 # Get environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN")
+SLACK_USER_TOKEN = os.getenv("SLACK_USER_TOKEN")
 
 # Check if API key is available
 if not OPENAI_API_KEY:
     raise ValueError("API Key is missing. Set the OPENAI_API_KEY environment variable.")
 
 # Initializes your app with your bot token and socket mode handler
-app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+app = App(token=SLACK_BOT_TOKEN)
 
-# In-memory storage for user-generated content
+# In-memory storage for user-generated content and configuration
 user_content = {}
+user_config = {}
 
 # Home Tab view
 def home_tab_view(client, user_id):
     blocks = [
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": "Configuration",
+                        "emoji": True
+                    },
+                    "action_id": "open_configuration"
+                }
+            ]
+        },
         {
             "dispatch_action": True,
             "type": "input",
@@ -68,6 +84,49 @@ def update_home_tab(client, event):
         logging.debug(f"View published successfully: {response}")
     except Exception as e:
         logging.error(f"Error publishing view: {e}")
+
+@app.action("open_configuration")
+def handle_open_configuration(ack, body, client):
+    ack()
+    try:
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view={
+                "type": "modal",
+                "callback_id": "configuration_modal",
+                "title": {"type": "plain_text", "text": "Configuration"},
+                "blocks": [
+                    {
+                        "type": "input",
+                        "block_id": "channel_select_block",
+                        "element": {
+                            "type": "channels_select",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Select a channel"
+                            },
+                            "action_id": "channel_select_action"
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Select channel for profile images"
+                        }
+                    }
+                ],
+                "submit": {"type": "plain_text", "text": "Save"}
+            }
+        )
+    except Exception as e:
+        logging.error(f"Error opening configuration modal: {e}")
+
+@app.view("configuration_modal")
+def handle_configuration_submission(ack, body, view):
+    ack()
+    user_id = body["user"]["id"]
+    selected_channel = view["state"]["values"]["channel_select_block"]["channel_select_action"]["selected_channel"]
+    # Store the selected channel in the in-memory storage
+    user_config[user_id] = {"channel": selected_channel}
+    logging.info(f"Selected channel for profile images: {selected_channel}")
 
 @app.action("profile_picture_prompt")
 def handle_some_action(ack, body, client, logger):
@@ -299,41 +358,6 @@ def handle_update_user_profile(ack, body, client, logger):
         logging.debug(f"Dialog opened successfully: {response}")
     except Exception as e:
         logging.error(f"Error opening dialog: {e}")
-
-@app.view("update_profile_modal")
-def handle_update_profile_modal(ack, body, client, view, logger):
-    ack()
-    user_id = view["state"]["values"]["user_select_block"]["user_select_action"]["selected_user"]
-    first_name = view["state"]["values"]["first_name_block"]["first_name_action"]["value"]
-    last_name = view["state"]["values"]["last_name_block"]["last_name_action"]["value"]
-    job_title = view["state"]["values"]["job_title_block"]["job_title_action"]["value"]
-    
-    # Update the user profile using Slack's API
-    try:
-        profile_data = {}
-        if first_name:
-            profile_data["first_name"] = first_name
-        if last_name:
-            profile_data["last_name"] = last_name
-        if job_title:
-            profile_data["title"] = job_title
-        
-        if profile_data:
-            response = client.users_profile_set(
-                user=user_id,
-                profile=profile_data
-            )
-            logging.debug(f"User profile updated successfully: {response}")
-        
-        # Update the user profile image
-        image_url = user_content[body["user"]["id"]][1]["image_url"]
-        response = client.users_setPhoto(
-            user=user_id,
-            image=image_url
-        )
-        logging.debug(f"User profile image updated successfully: {response}")
-    except Exception as e:
-        logging.error(f"Error updating user profile: {e}")
 
 # Start your app
 if __name__ == "__main__":
