@@ -80,12 +80,15 @@ def handle_some_action(ack, body, client, logger):
     # Display loading message
     blocks = home_tab_view(client, user_id)["blocks"]
 
+    # Clear existing preview blocks and loading message
+    blocks = [block for block in blocks if block.get("type") not in ["image", "header", "context", "section"] or block.get("text", {}).get("text") != ":hourglass: Generating your profile picture, please wait..."]
+    
     # Add loading message
     blocks.append({
         "type": "section",
         "text": {
             "type": "mrkdwn",
-            "text": "Generating your profile picture, please wait..."
+            "text": ":hourglass: Generating your profile picture, please wait..."
         }
     })
     
@@ -102,10 +105,15 @@ def handle_some_action(ack, body, client, logger):
     # API endpoint for image generation
     url = "https://api.openai.com/v1/images/generations"
     
+    # System prompt to be prefixed to the user's prompt
+    system_prompt = "You are generating a Slack profile. Strictly ensure images should be well framed and the person should be looking straight on. DO NOT include other people in the image, it should be of an individual only. DO NOT include text. Image should be realistic not cartoon. Generate a slack profile with the following description:"
+    
     # Request data - customize as needed
+    user_prompt = body["actions"][0]["value"]
+    full_prompt = system_prompt + user_prompt
     payload = {
         "model": "dall-e-3",  # Change to "dall-e-2" if you want to use DALL·E 2
-        "prompt": body["actions"][0]["value"],  # Use the prompt from the input
+        "prompt": full_prompt,  # Use the full prompt with the system prompt prefixed
         "n": 1,  # Number of images to generate (between 1 and 10)
         "size": "1024x1024",  # Set to "256x256", "512x512", or "1024x1024" for DALL·E 2, or for DALL·E 3
     }
@@ -150,12 +158,33 @@ def handle_some_action(ack, body, client, logger):
                     }
                 ]
             })
+            new_blocks.append({
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": ":x: Delete"
+                        },
+                        "action_id": "delete_image"
+                    },
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": ":slack: Update user profile"
+                        },
+                        "action_id": "update_user_profile"
+                    }
+                ]
+            })
         
         # Store the new blocks in the in-memory storage
         user_content[user_id] = new_blocks
         
         # Update the view with the new blocks
-        blocks = [block for block in blocks if block.get("type") != "section" or block.get("text", {}).get("text") != "Generating your profile picture, please wait..."]
+        blocks = [block for block in blocks if block.get("type") != "section" or block.get("text", {}).get("text") != ":hourglass: Generating your profile picture, please wait..."]
         blocks.extend(new_blocks)
         view = {
             "type": "home",
@@ -170,6 +199,141 @@ def handle_some_action(ack, body, client, logger):
         # Handle errors
         logging.error(f"Error: {response.status_code} - {response.text}")
     logger.info(body)
+
+@app.action("delete_image")
+def handle_delete_image(ack, body, client, logger):
+    ack()
+    user_id = body["user"]["id"]
+    
+    # Clear the user content for the specific user
+    if user_id in user_content:
+        del user_content[user_id]
+    
+    # Update the home tab view
+    view = home_tab_view(client, user_id)
+    try:
+        response = client.views_publish(user_id=user_id, view=view)
+        logging.debug(f"View updated successfully after deleting image: {response}")
+    except Exception as e:
+        logging.error(f"Error updating view after deleting image: {e}")
+
+@app.action("update_user_profile")
+def handle_update_user_profile(ack, body, client, logger):
+    ack()
+    user_id = body["user"]["id"]
+    
+    # Open a dialog for updating the user profile
+    try:
+        response = client.views_open(
+            trigger_id=body["trigger_id"],
+            view={
+                "type": "modal",
+                "callback_id": "update_profile_modal",
+                "title": {
+                    "type": "plain_text",
+                    "text": "Update User Profile"
+                },
+                "blocks": [
+                    {
+                        "type": "input",
+                        "block_id": "user_select_block",
+                        "element": {
+                            "type": "users_select",
+                            "action_id": "user_select_action",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Select a user"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "User"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "first_name_block",
+                        "optional": True,
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "first_name_action"
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "First Name"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "last_name_block",
+                        "optional": True,
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "last_name_action"
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Last Name"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "job_title_block",
+                        "optional": True,
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "job_title_action"
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Job Title"
+                        }
+                    }
+                ],
+                "submit": {
+                    "type": "plain_text",
+                    "text": "Confirm"
+                }
+            }
+        )
+        logging.debug(f"Dialog opened successfully: {response}")
+    except Exception as e:
+        logging.error(f"Error opening dialog: {e}")
+
+@app.view("update_profile_modal")
+def handle_update_profile_modal(ack, body, client, view, logger):
+    ack()
+    user_id = view["state"]["values"]["user_select_block"]["user_select_action"]["selected_user"]
+    first_name = view["state"]["values"]["first_name_block"]["first_name_action"]["value"]
+    last_name = view["state"]["values"]["last_name_block"]["last_name_action"]["value"]
+    job_title = view["state"]["values"]["job_title_block"]["job_title_action"]["value"]
+    
+    # Update the user profile using Slack's API
+    try:
+        profile_data = {}
+        if first_name:
+            profile_data["first_name"] = first_name
+        if last_name:
+            profile_data["last_name"] = last_name
+        if job_title:
+            profile_data["title"] = job_title
+        
+        if profile_data:
+            response = client.users_profile_set(
+                user=user_id,
+                profile=profile_data
+            )
+            logging.debug(f"User profile updated successfully: {response}")
+        
+        # Update the user profile image
+        image_url = user_content[body["user"]["id"]][1]["image_url"]
+        response = client.users_setPhoto(
+            user=user_id,
+            image=image_url
+        )
+        logging.debug(f"User profile image updated successfully: {response}")
+    except Exception as e:
+        logging.error(f"Error updating user profile: {e}")
 
 # Start your app
 if __name__ == "__main__":
